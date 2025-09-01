@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import aiohttp
 from aiohttp import web
 import websockets
-import aiohttp_cors # Importação adicionada
+import aiohttp_cors
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -64,6 +64,7 @@ Zoom etiquette:
 class RecallAPIClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
+        # Corrigido para usar a região que funcionou para você
         self.base_url = "https://us-west-2.recall.ai/api/v1"
         
     async def create_bot(self, meeting_url: str, bot_name: str, persona_key: str) -> Dict[str, Any]:
@@ -132,7 +133,11 @@ async def connect_to_openai_with_persona(persona_key: str):
 async def websocket_handler(request):
     ws = web.WebSocketResponse(protocols=["realtime"])
     await ws.prepare(request)
+    
+    # FIX: Correctly parse the persona key from the query string
     persona_key = request.query.get('persona', 'munffett')
+    
+    logger.info(f"WebSocket connection initiated with persona: {persona_key}")
     openai_ws = None
     try:
         openai_ws, session_created = await connect_to_openai_with_persona(persona_key)
@@ -140,8 +145,9 @@ async def websocket_handler(request):
         
         async def relay(source, dest):
             async for msg in source:
-                if isinstance(msg, str): await dest.send_str(msg)
-                elif msg.type == aiohttp.WSMsgType.TEXT: await dest.send_str(msg.data)
+                if dest.closed: break
+                data_to_send = msg.data if isinstance(msg, aiohttp.WSMessage) else msg
+                await dest.send(data_to_send)
 
         await asyncio.gather(relay(ws, openai_ws), relay(openai_ws, ws))
     except Exception as e:
@@ -178,7 +184,6 @@ def create_app():
                 allow_headers="*", allow_methods="*")
     })
 
-    # Adicionar rotas
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/api/recall/create', create_bot)
     app.router.add_get('/api/recall/ping', ping)
