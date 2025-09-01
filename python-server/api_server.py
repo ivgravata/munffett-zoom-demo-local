@@ -64,7 +64,7 @@ Zoom etiquette:
 class RecallAPIClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = "https://us-west-2.recall.ai/api/v1" # Usando a região correta para você
+        self.base_url = "https://us-west-2.recall.ai/api/v1"
         
     async def create_bot(self, meeting_url: str, bot_name: str, persona_key: str) -> Dict[str, Any]:
         backend_url = os.getenv("PUBLIC_URL")
@@ -131,7 +131,6 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse(protocols=["realtime"])
     await ws.prepare(request)
     
-    # SOLUÇÃO: Pega o parâmetro 'persona' e remove qualquer coisa extra
     raw_persona = request.query.get('persona', 'munffett')
     persona_key = raw_persona.split('?')[0]
     
@@ -141,13 +140,20 @@ async def websocket_handler(request):
         openai_ws, session_created = await connect_to_openai_with_persona(persona_key)
         await ws.send_str(json.dumps(session_created))
         
-        async def relay(source, dest):
-            async for msg in source:
-                if dest.closed: break
-                data_to_send = msg.data if isinstance(msg, aiohttp.WSMessage) else msg
-                await dest.send(data_to_send)
+        # SOLUÇÃO: Lógica de relay corrigida com os métodos certos para cada biblioteca
+        async def relay_to_openai():
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    if not openai_ws.closed:
+                        await openai_ws.send(msg.data)
 
-        await asyncio.gather(relay(ws, openai_ws), relay(openai_ws, ws))
+        async def relay_from_openai():
+            async for msg in openai_ws:
+                if not ws.closed:
+                    await ws.send_str(msg)
+
+        await asyncio.gather(relay_to_openai(), relay_from_openai())
+        
     except Exception as e:
         logger.error(f"WebSocket handler error: {e}")
     finally:
