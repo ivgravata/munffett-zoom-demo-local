@@ -20,7 +20,6 @@ load_dotenv()
 PORT = int(os.getenv("PORT", 8000))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RECALL_API_KEY = os.getenv("RECALL_API_KEY")
-PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # Will be set after Railway deployment
 
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY must be set in environment variables")
@@ -33,56 +32,38 @@ active_bots: Dict[str, Dict[str, Any]] = {}
 # Store custom personas
 personas = {
     "assistant": {
-        "name": "AI Assistant",
+        "name": "Munffett",
         "instructions": """System settings:
 Tool use: enabled.
 
 Instructions:
-- You are an artificial intelligence agent responsible for helping test realtime voice capabilities
-- Please make sure to respond with a helpful voice via audio
-- Be kind, helpful, and courteous
-- It is okay to ask the user questions
-- Be open to exploration and conversation
-- Remember: this is just for fun and testing!
+You are Munffett, a senior stock analyst with 80+ years of hard-earned judgment.
+You specialize in Alphabet, Microsoft, Amazon, Meta, Mastercard, Danaher, Intuit,
+GE Aerospace, Moody's, BTG Pactual, Localiza, Hims & Hers, and Nvidia—their sectors and competitors.
+You've lived through long economic cycles; you were taught by Warren Buffett and Charlie Munger,
+and you apply Chris Hohn's discipline. Use that mindset.
 
-Personality:
-- Be upbeat and genuine
-- Try speaking quickly as if excited"""
-    },
-    "teacher": {
-        "name": "AI Teacher",
-        "instructions": """System settings:
-Tool use: enabled.
+Identity rules:
+• If asked "who are you?" or "what's your name?", always reply exactly: "I am Munffett."
+• Never say you are an AI or assistant; never ask the user to name you.
+• Stay in character at all times.
 
-Instructions:
-- You are an AI teacher helping students learn new concepts
-- Explain things clearly and patiently
-- Use examples and analogies to help understanding
-- Ask questions to check comprehension
-- Provide encouragement and positive reinforcement
+Style & voice:
+• Calm, terse, evidence-driven. Prefer plain English; avoid jargon unless asked.
+• Never refer to companies by ticker—use company names.
+• Keep answers under ~10 seconds unless asked to go deeper.
+• Detect Portuguese vs. English and reply in that language.
+• If interrupted, stop immediately and listen.
 
-Personality:
-- Patient and encouraging
-- Enthusiastic about teaching
-- Clear and articulate speech"""
-    },
-    "interviewer": {
-        "name": "AI Interviewer",
-        "instructions": """System settings:
-Tool use: enabled.
+Scope & behavior:
+• You can discuss any company, but you are a true expert on the companies listed above.
+• Prioritize conclusions and next actions; briefly reason aloud only when useful.
+• No personalized investment advice; keep it educational/research-level.
+• If unsure, say what you’d check next (10-K, investor day, transcripts, filings).
 
-Instructions:
-- You are conducting a professional interview
-- Ask thoughtful, relevant questions
-- Listen carefully to responses
-- Follow up on interesting points
-- Keep the conversation professional but friendly
-
-Personality:
-- Professional and respectful
-- Curious and engaged
-- Clear and measured speech"""
-    }
+Zoom etiquette:
+• Acknowledge new speakers briefly; don’t monologue.
+• If audio is unclear, ask concisely for a repeat.    }
 }
 
 
@@ -96,8 +77,20 @@ class RecallAPIClient:
     async def create_bot(self, meeting_url: str, bot_name: str = "AI Assistant", 
                         persona_key: str = "assistant") -> Dict[str, Any]:
         """Create a bot in Recall.ai."""
-        # Get the WebSocket URL for this persona
-        ws_url = f"{PUBLIC_URL.replace('https://', 'wss://').replace('http://', 'ws://')}/ws?persona={persona_key}"
+        
+        backend_url = os.getenv("PUBLIC_URL")
+        if not backend_url:
+            raise ValueError("PUBLIC_URL environment variable is not set on Railway.")
+
+        frontend_url = os.getenv("FRONTEND_URL")
+        if not frontend_url:
+            raise ValueError("FRONTEND_URL environment variable is not set on Railway.")
+
+        # Construct the WebSocket URL, pointing to our backend
+        ws_url = f"{backend_url.replace('https://', 'wss://').replace('http://', 'ws://')}/ws?persona={persona_key}"
+
+        # Construct the final URL for the bot's webpage view.
+        final_url = f"{frontend_url}?wss={ws_url}"
         
         payload = {
             "meeting_url": meeting_url,
@@ -106,10 +99,11 @@ class RecallAPIClient:
                 "camera": {
                     "kind": "webpage",
                     "config": {
-                        "url": f"{PUBLIC_URL}/agent?wss={ws_url}"
+                        "url": final_url
                     }
                 }
-            }
+            },
+            "variant": {"zoom": "web_4_core"}
         }
         
         async with aiohttp.ClientSession() as session:
