@@ -29,15 +29,11 @@ if not RECALL_API_KEY:
 # Store active bots
 active_bots: Dict[str, Dict[str, Any]] = {}
 
-# Store custom personas
+# Persona única: Munffett
 personas = {
-    "assistant": {
+    "munffett": {
         "name": "Munffett",
-        "instructions": """System settings:
-Tool use: enabled.
-
-Instructions:
-You are Munffett, a senior stock analyst with 80+ years of hard-earned judgment.
+        "instructions": """You are Munffett, a senior stock analyst with 80+ years of hard-earned judgment.
 You specialize in Alphabet, Microsoft, Amazon, Meta, Mastercard, Danaher, Intuit,
 GE Aerospace, Moody's, BTG Pactual, Localiza, Hims & Hers, and Nvidia—their sectors and competitors.
 You've lived through long economic cycles; you were taught by Warren Buffett and Charlie Munger,
@@ -63,7 +59,8 @@ Scope & behavior:
 
 Zoom etiquette:
 • Acknowledge new speakers briefly; don’t monologue.
-• If audio is unclear, ask concisely for a repeat.    }
+• If audio is unclear, ask concisely for a repeat."""
+    }
 }
 
 
@@ -74,8 +71,7 @@ class RecallAPIClient:
         self.api_key = api_key
         self.base_url = "https://us-east-1.recall.ai/api/v1"
         
-    async def create_bot(self, meeting_url: str, bot_name: str = "AI Assistant", 
-                        persona_key: str = "assistant") -> Dict[str, Any]:
+    async def create_bot(self, meeting_url: str, bot_name: str, persona_key: str) -> Dict[str, Any]:
         """Create a bot in Recall.ai."""
         
         backend_url = os.getenv("PUBLIC_URL")
@@ -86,10 +82,7 @@ class RecallAPIClient:
         if not frontend_url:
             raise ValueError("FRONTEND_URL environment variable is not set on Railway.")
 
-        # Construct the WebSocket URL, pointing to our backend
         ws_url = f"{backend_url.replace('https://', 'wss://').replace('http://', 'ws://')}/ws?persona={persona_key}"
-
-        # Construct the final URL for the bot's webpage view.
         final_url = f"{frontend_url}?wss={ws_url}"
         
         payload = {
@@ -98,9 +91,7 @@ class RecallAPIClient:
             "output_media": {
                 "camera": {
                     "kind": "webpage",
-                    "config": {
-                        "url": final_url
-                    }
+                    "config": {"url": final_url}
                 }
             },
             "variant": {"zoom": "web_4_core"}
@@ -110,10 +101,7 @@ class RecallAPIClient:
             async with session.post(
                 f"{self.base_url}/bot",
                 json=payload,
-                headers={
-                    "Authorization": self.api_key,
-                    "Content-Type": "application/json"
-                }
+                headers={"Authorization": self.api_key, "Content-Type": "application/json"}
             ) as response:
                 if response.status == 200 or response.status == 201:
                     data = await response.json()
@@ -129,134 +117,82 @@ class RecallAPIClient:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/bot/{bot_id}/leave_call",
-                headers={
-                    "Authorization": self.api_key,
-                    "Content-Type": "application/json"
-                }
+                headers={"Authorization": self.api_key, "Content-Type": "application/json"}
             ) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"Bot ended successfully: {bot_id}")
-                    return data
+                    return await response.json()
                 else:
-                    text = await response.text()
-                    logger.error(f"Failed to end bot: {response.status} - {text}")
-                    raise Exception(f"Failed to end bot: {text}")
+                    raise Exception(f"Failed to end bot: {await response.text()}")
     
     async def list_bots(self) -> list:
         """List all active bots."""
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{self.base_url}/bot",
-                headers={
-                    "Authorization": self.api_key
-                }
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data
-                else:
-                    return []
+            async with session.get(f"{self.base_url}/bot", headers={"Authorization": self.api_key}) as response:
+                return await response.json() if response.status == 200 else []
 
 
 async def connect_to_openai_with_persona(persona_key: str):
     """Connect to OpenAI's WebSocket endpoint with a specific persona."""
     uri = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
-    
-    persona = personas.get(persona_key, personas["assistant"])
+    persona = personas.get(persona_key)
+
+    if not persona:
+        raise ValueError(f"Persona '{persona_key}' not found.")
 
     try:
         ws = await connect(
             uri,
-            extra_headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            extra_headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "OpenAI-Beta": "realtime=v1"},
             subprotocols=["realtime"],
         )
         logger.info(f"Successfully connected to OpenAI with persona: {persona_key}")
 
         response = await ws.recv()
-        try:
-            event = json.loads(response)
-            if event.get("type") != "session.created":
-                raise Exception(f"Expected session.created, got {event.get('type')}")
-            logger.info("Received session.created response")
-
-            # Update session with persona instructions
-            update_session = {
-                "type": "session.update",
-                "session": {
-                    "instructions": persona["instructions"],
-                    "input_audio_format": "pcm16",
-                    "output_audio_format": "pcm16",
-                    "modalities": ["text", "audio"],
-                    "voice": "alloy",
-                    "turn_detection": {
-                        "type": "server_vad"
-                    }
-                },
-            }
-            await ws.send(json.dumps(update_session))
-            logger.info(f"Sent session.update message with {persona_key} persona")
-
-            return ws, event
-        except json.JSONDecodeError:
-            raise Exception(f"Invalid JSON response from OpenAI: {response}")
+        event = json.loads(response)
+        if event.get("type") != "session.created":
+            raise Exception(f"Expected session.created, got {event.get('type')}")
+        
+        update_session = {
+            "type": "session.update",
+            "session": {
+                "instructions": persona["instructions"],
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "modalities": ["text", "audio"],
+                "voice": "alloy",
+                "turn_detection": {"type": "server_vad"}
+            },
+        }
+        await ws.send(json.dumps(update_session))
+        logger.info(f"Sent session.update message with {persona_key} persona")
+        return ws, event
 
     except Exception as e:
         logger.error(f"Failed to connect to OpenAI: {str(e)}")
         raise
 
 
-# WebSocket handler for AI agents
 async def websocket_handler(request):
     """Handle WebSocket connections from Recall.ai bots."""
     ws = web.WebSocketResponse(protocols=["realtime"])
     await ws.prepare(request)
     
-    # Get persona from query parameters
-    persona_key = request.query.get('persona', 'assistant')
-    logger.info(f"WebSocket connection initiated with persona: {persona_key}")
-    
+    persona_key = request.query.get('persona', 'munffett') # Default to munffett
     openai_ws = None
     
     try:
-        # Connect to OpenAI with the specified persona
         openai_ws, session_created = await connect_to_openai_with_persona(persona_key)
-        
-        # Send session created to client
         await ws.send_str(json.dumps(session_created))
         
-        # Relay messages between client and OpenAI
         async def relay_to_openai():
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        event = json.loads(msg.data)
-                        logger.info(f'Relaying "{event.get("type")}" to OpenAI')
-                        await openai_ws.send(msg.data)
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON from client: {msg.data}")
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    logger.error(f'WebSocket error: {ws.exception()}')
-                    break
+                    await openai_ws.send(msg.data)
         
         async def relay_from_openai():
-            while True:
-                try:
-                    message = await openai_ws.recv()
-                    event = json.loads(message)
-                    logger.info(f'Relaying "{event.get("type")}" from OpenAI')
-                    await ws.send_str(message)
-                except websockets.exceptions.ConnectionClosed:
-                    break
-                except Exception as e:
-                    logger.error(f"Error relaying from OpenAI: {e}")
-                    break
-        
-        # Run both relay tasks concurrently
+            async for msg in openai_ws:
+                await ws.send_str(msg)
+
         await asyncio.gather(relay_to_openai(), relay_from_openai())
         
     except Exception as e:
@@ -269,145 +205,53 @@ async def websocket_handler(request):
     return ws
 
 
-# API Routes
 async def create_bot(request):
     """API endpoint to create a bot."""
     try:
         data = await request.json()
         meeting_url = data.get('meeting_url')
-        persona_key = data.get('persona', 'assistant')
+        persona_key = "munffett" # Always use munffett
         
         if not meeting_url:
             return web.json_response({'error': 'meeting_url is required'}, status=400)
-        
-        if persona_key not in personas:
-            return web.json_response({'error': f'Invalid persona. Available: {list(personas.keys())}'}, status=400)
         
         recall_client = RecallAPIClient(RECALL_API_KEY)
         persona = personas[persona_key]
         bot_data = await recall_client.create_bot(meeting_url, persona["name"], persona_key)
         
-        # Store bot info
-        active_bots[bot_data['id']] = {
-            'id': bot_data['id'],
-            'meeting_url': meeting_url,
-            'persona': persona_key,
-            'created_at': datetime.now().isoformat(),
-            'status': 'active'
-        }
-        
+        active_bots[bot_data['id']] = {'id': bot_data['id'], 'status': 'active'}
         return web.json_response(bot_data)
     except Exception as e:
-        logger.error(f"Error creating bot: {e}")
         return web.json_response({'error': str(e)}, status=500)
-
 
 async def end_bot(request):
     """API endpoint to end a bot."""
     try:
         bot_id = request.match_info.get('bot_id')
-        
         recall_client = RecallAPIClient(RECALL_API_KEY)
         result = await recall_client.end_bot(bot_id)
-        
-        # Update bot status
         if bot_id in active_bots:
             active_bots[bot_id]['status'] = 'ended'
-        
         return web.json_response(result)
     except Exception as e:
-        logger.error(f"Error ending bot: {e}")
         return web.json_response({'error': str(e)}, status=500)
-
-
-async def list_bots(request):
-    """API endpoint to list active bots."""
-    try:
-        recall_client = RecallAPIClient(RECALL_API_KEY)
-        bots = await recall_client.list_bots()
-        return web.json_response(bots)
-    except Exception as e:
-        logger.error(f"Error listing bots: {e}")
-        return web.json_response({'error': str(e)}, status=500)
-
-
-async def get_personas(request):
-    """API endpoint to get available personas."""
-    persona_list = [
-        {'key': key, 'name': value['name'], 'description': value['instructions'][:100] + '...'}
-        for key, value in personas.items()
-    ]
-    return web.json_response(persona_list)
-
 
 async def ping(request):
     """Health check endpoint."""
-    return web.json_response({'ok': True, 'timestamp': datetime.now().isoformat()})
-
-
-async def serve_agent_html(request):
-    """Serve the agent HTML page."""
-    html_content = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Agent</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            width: 100vw;
-            height: 100vh;
-            overflow: hidden;
-        }
-        iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-    </style>
-</head>
-<body>
-    <iframe id="agent-frame"></iframe>
-    <script>
-        // Get WebSocket URL from query parameter
-        const params = new URLSearchParams(window.location.search);
-        const wssUrl = params.get('wss');
-        
-        if (wssUrl) {
-            // Point to the hosted client with WebSocket URL
-            const clientUrl = `https://voice-agent-client.vercel.app/?wss=${encodeURIComponent(wssUrl)}`;
-            document.getElementById('agent-frame').src = clientUrl;
-        } else {
-            document.body.innerHTML = '<h1>Error: No WebSocket URL provided</h1>';
-        }
-    </script>
-</body>
-</html>"""
-    return web.Response(text=html_content, content_type='text/html')
-
+    return web.json_response({'ok': True})
 
 def create_app():
     """Create the aiohttp application."""
     app = web.Application()
     
-    # Add routes
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/api/recall/create', create_bot)
     app.router.add_post('/api/recall/end/{bot_id}', end_bot)
-    app.router.add_get('/api/recall/list', list_bots)
-    app.router.add_get('/api/recall/personas', get_personas)
     app.router.add_get('/api/recall/ping', ping)
-    app.router.add_get('/agent', serve_agent_html)
     
-    # CORS middleware
     async def cors_middleware(app, handler):
         async def middleware_handler(request):
-            if request.method == 'OPTIONS':
-                response = web.Response()
-            else:
-                response = await handler(request)
+            response = await handler(request)
             response.headers['Access-Control-Allow-Origin'] = '*'
             response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
             response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
@@ -415,9 +259,7 @@ def create_app():
         return middleware_handler
     
     app.middlewares.append(cors_middleware)
-    
     return app
-
 
 if __name__ == '__main__':
     app = create_app()
