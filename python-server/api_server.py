@@ -64,17 +64,14 @@ Zoom etiquette:
 class RecallAPIClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        # Corrigido para usar a região que funcionou para você
-        self.base_url = "https://us-west-2.recall.ai/api/v1"
+        self.base_url = "https://us-west-2.recall.ai/api/v1" # Usando a região correta para você
         
     async def create_bot(self, meeting_url: str, bot_name: str, persona_key: str) -> Dict[str, Any]:
         backend_url = os.getenv("PUBLIC_URL")
-        if not backend_url:
-            raise ValueError("PUBLIC_URL environment variable is not set on Railway.")
+        if not backend_url: raise ValueError("PUBLIC_URL environment variable is not set on Railway.")
 
         frontend_url = os.getenv("FRONTEND_URL")
-        if not frontend_url:
-            raise ValueError("FRONTEND_URL environment variable is not set on Railway.")
+        if not frontend_url: raise ValueError("FRONTEND_URL environment variable is not set on Railway.")
 
         ws_url = f"{backend_url.replace('https://', 'wss://')}/ws?persona={persona_key}"
         final_url = f"{frontend_url}?wss={ws_url}"
@@ -100,7 +97,7 @@ class RecallAPIClient:
                     raise Exception(f"Failed to create bot: {text}")
 
 async def connect_to_openai_with_persona(persona_key: str):
-    uri = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+    uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
     persona = personas.get(persona_key)
     if not persona: raise ValueError(f"Persona '{persona_key}' not found.")
 
@@ -134,8 +131,9 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse(protocols=["realtime"])
     await ws.prepare(request)
     
-    # FIX: Correctly parse the persona key from the query string
-    persona_key = request.query.get('persona', 'munffett')
+    # SOLUÇÃO: Pega o parâmetro 'persona' e remove qualquer coisa extra
+    raw_persona = request.query.get('persona', 'munffett')
+    persona_key = raw_persona.split('?')[0]
     
     logger.info(f"WebSocket connection initiated with persona: {persona_key}")
     openai_ws = None
