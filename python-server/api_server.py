@@ -141,12 +141,18 @@ async def websocket_handler(request):
         openai_ws, session_created = await connect_to_openai_with_persona(persona_key)
         await ws.send_str(json.dumps(session_created))
         
-        # CORREÇÃO: Lógica de relay corrigida
+        # Lógica de relay com o "guardião" da persona
         async def relay_to_openai():
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
+                    event = json.loads(msg.data)
+                    # SOLUÇÃO: Impede que o cliente sobrescreva as instruções
+                    if event.get("type") == "session.update" and "session" in event:
+                        if "instructions" in event["session"]:
+                            del event["session"]["instructions"]
+                    
                     if not openai_ws.closed:
-                        await openai_ws.send(msg.data)
+                        await openai_ws.send(json.dumps(event))
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     break
 
