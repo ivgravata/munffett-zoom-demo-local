@@ -61,34 +61,29 @@ class RecallAPIClient:
 async def handle_elevenlabs_agent_stream(client_ws):
     uri = f"wss://api.elevenlabs.io/v1/agent/{ELEVENLABS_AGENT_ID}/stream"
     
-    # A correção está aqui: a chave da API é passada nos cabeçalhos da ligação
+    # A correção está aqui: a chave da API é passada no cabeçalho 'xi-api-key'
     async with websockets.connect(
         uri, 
-        extra_headers={"Authorization": f"Bearer {ELEVENLABS_API_KEY}"}
+        extra_headers={"xi-api-key": ELEVENLABS_API_KEY}
     ) as elevenlabs_ws:
 
         async def forward_to_elevenlabs():
             # Encaminha o áudio do Cliente (Zoom) -> ElevenLabs
             try:
+                # A primeira mensagem do cliente pode ser para configurar a sessão
+                # Enviamos as configurações de voz para a ElevenLabs nesse momento
+                first_message = await client_ws.receive()
+                if first_message.type == aiohttp.WSMsgType.TEXT:
+                    init_message = {
+                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+                    }
+                    await elevenlabs_ws.send(json.dumps(init_message))
+                
+                # Agora, reencaminha o resto do áudio
                 async for msg in client_ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        # O cliente pode enviar mensagens de controlo JSON que devemos ignorar
-                        try:
-                            event = json.loads(msg.data)
-                            if event.get("type") == "session.update":
-                                # Enviar configurações de voz na primeira mensagem
-                                auth_message = {
-                                    "voice_settings": {
-                                        "stability": 0.5,
-                                        "similarity_boost": 0.7
-                                    }
-                                }
-                                await elevenlabs_ws.send(json.dumps(auth_message))
-                        except json.JSONDecodeError:
-                            pass # Ignorar mensagens de texto que não são JSON
-                    elif msg.type == aiohttp.WSMsgType.BINARY:
+                    if msg.type == aiohttp.WSMsgType.BINARY:
                         await elevenlabs_ws.send(msg.data)
-            except websockets.exceptions.ConnectionClosed as e:
+            except Exception as e:
                 logger.info(f"Ligação do cliente fechada: {e}")
 
         async def forward_to_client():
@@ -107,7 +102,7 @@ async def handle_elevenlabs_agent_stream(client_ws):
                             "item": {"id": "elevenlabs_stream"}
                         }
                         await client_ws.send_str(json.dumps(payload))
-            except websockets.exceptions.ConnectionClosed as e:
+            except Exception as e:
                 logger.info(f"Ligação da ElevenLabs fechada: {e}")
 
         # Executa ambas as tarefas em simultâneo
