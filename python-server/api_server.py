@@ -118,7 +118,8 @@ async def connect_to_openai_with_persona(persona_key: str):
             "session": {
                 "instructions": persona["instructions"], "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16", "modalities": ["text", "audio"],
-                "voice": "ash", "turn_detection": {"type": "server_vad"}
+                "voice": {"id": "ash"},  # Corrected format
+                "turn_detection": {"type": "server_vad"}
             },
         }
         await ws.send(json.dumps(update_session))
