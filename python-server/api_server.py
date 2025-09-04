@@ -61,25 +61,17 @@ class RecallAPIClient:
 async def handle_elevenlabs_agent_stream(client_ws):
     uri = f"wss://api.elevenlabs.io/v1/agent/{ELEVENLABS_AGENT_ID}/stream"
     
-    # A correção está aqui: a chave da API é passada no cabeçalho 'xi-api-key'
-    async with websockets.connect(
-        uri, 
-        extra_headers={"xi-api-key": ELEVENLABS_API_KEY}
-    ) as elevenlabs_ws:
+    async with websockets.connect(uri) as elevenlabs_ws:
+        # 1. Envia a mensagem de autenticação primeiro
+        auth_message = {
+            "xi_api_key": ELEVENLABS_API_KEY,
+            "voice_settings": { "stability": 0.5, "similarity_boost": 0.7 }
+        }
+        await elevenlabs_ws.send(json.dumps(auth_message))
 
         async def forward_to_elevenlabs():
             # Encaminha o áudio do Cliente (Zoom) -> ElevenLabs
             try:
-                # A primeira mensagem do cliente pode ser para configurar a sessão
-                # Enviamos as configurações de voz para a ElevenLabs nesse momento
-                first_message = await client_ws.receive()
-                if first_message.type == aiohttp.WSMsgType.TEXT:
-                    init_message = {
-                        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-                    }
-                    await elevenlabs_ws.send(json.dumps(init_message))
-                
-                # Agora, reencaminha o resto do áudio
                 async for msg in client_ws:
                     if msg.type == aiohttp.WSMsgType.BINARY:
                         await elevenlabs_ws.send(msg.data)
@@ -91,8 +83,6 @@ async def handle_elevenlabs_agent_stream(client_ws):
             try:
                 async for audio_chunk in elevenlabs_ws:
                     if not client_ws.closed:
-                        # O cliente espera que o áudio esteja num formato específico
-                        # (base64 dentro de um objeto JSON)
                         payload = {
                             "type": "conversation.item.delta",
                             "delta": {
