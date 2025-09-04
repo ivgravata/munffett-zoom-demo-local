@@ -150,6 +150,11 @@ async def websocket_handler(request):
                     if event.get("type") == "session.update" and "session" in event:
                         if "instructions" in event["session"]:
                             del event["session"]["instructions"]
+                        if "voice" in event["session"]:
+                            del event["session"]["voice"]
+                        if "model" in event["session"]:
+                            del event["session"]["model"]
+
                     
                     if not openai_ws.closed:
                         await openai_ws.send(json.dumps(event))
