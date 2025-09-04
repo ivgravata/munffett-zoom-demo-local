@@ -62,10 +62,10 @@ async def handle_elevenlabs_agent_stream(client_ws):
     uri = f"wss://api.elevenlabs.io/v1/agent/{ELEVENLABS_AGENT_ID}/stream"
     
     async with websockets.connect(uri) as elevenlabs_ws:
-        # 1. Envia a mensagem de autenticação primeiro
+        # 1. Envia a mensagem de autenticação e configuração como a primeira mensagem
         auth_message = {
             "xi_api_key": ELEVENLABS_API_KEY,
-            "voice_settings": { "stability": 0.5, "similarity_boost": 0.7 }
+            "voice_settings": { "stability": 0.5, "similarity_boost": 0.75 }
         }
         await elevenlabs_ws.send(json.dumps(auth_message))
 
