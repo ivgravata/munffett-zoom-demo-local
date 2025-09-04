@@ -61,22 +61,32 @@ class RecallAPIClient:
 async def handle_elevenlabs_agent_stream(client_ws):
     uri = f"wss://api.elevenlabs.io/v1/agent/{ELEVENLABS_AGENT_ID}/stream"
     
-    async with websockets.connect(uri) as elevenlabs_ws:
-        # 1. Autorizar na ElevenLabs
-        auth_message = {
-            "xi_api_key": ELEVENLABS_API_KEY,
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.7
-            }
-        }
-        await elevenlabs_ws.send(json.dumps(auth_message))
+    # A correção está aqui: a chave da API é passada nos cabeçalhos da ligação
+    async with websockets.connect(
+        uri, 
+        extra_headers={"Authorization": f"Bearer {ELEVENLABS_API_KEY}"}
+    ) as elevenlabs_ws:
 
         async def forward_to_elevenlabs():
             # Encaminha o áudio do Cliente (Zoom) -> ElevenLabs
             try:
                 async for msg in client_ws:
-                    if msg.type == aiohttp.WSMsgType.BINARY:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        # O cliente pode enviar mensagens de controlo JSON que devemos ignorar
+                        try:
+                            event = json.loads(msg.data)
+                            if event.get("type") == "session.update":
+                                # Enviar configurações de voz na primeira mensagem
+                                auth_message = {
+                                    "voice_settings": {
+                                        "stability": 0.5,
+                                        "similarity_boost": 0.7
+                                    }
+                                }
+                                await elevenlabs_ws.send(json.dumps(auth_message))
+                        except json.JSONDecodeError:
+                            pass # Ignorar mensagens de texto que não são JSON
+                    elif msg.type == aiohttp.WSMsgType.BINARY:
                         await elevenlabs_ws.send(msg.data)
             except websockets.exceptions.ConnectionClosed as e:
                 logger.info(f"Ligação do cliente fechada: {e}")
@@ -86,6 +96,8 @@ async def handle_elevenlabs_agent_stream(client_ws):
             try:
                 async for audio_chunk in elevenlabs_ws:
                     if not client_ws.closed:
+                        # O cliente espera que o áudio esteja num formato específico
+                        # (base64 dentro de um objeto JSON)
                         payload = {
                             "type": "conversation.item.delta",
                             "delta": {
