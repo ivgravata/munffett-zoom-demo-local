@@ -97,7 +97,7 @@ class RecallAPIClient:
 
 async def connect_to_openai_with_persona(persona_key: str):
     # Modelo atualizado conforme sua solicitação
-    uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
+    uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
     persona = personas.get(persona_key)
     if not persona: raise ValueError(f"Persona '{persona_key}' not found.")
 
@@ -150,11 +150,6 @@ async def websocket_handler(request):
                     if event.get("type") == "session.update" and "session" in event:
                         if "instructions" in event["session"]:
                             del event["session"]["instructions"]
-                        if "voice" in event["session"]:
-                            del event["session"]["voice"]
-                        if "model" in event["session"]:
-                            del event["session"]["model"]
-
                     
                     if not openai_ws.closed:
                         await openai_ws.send(json.dumps(event))
