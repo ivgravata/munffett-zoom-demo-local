@@ -97,7 +97,7 @@ class RecallAPIClient:
 
 async def connect_to_openai_with_persona(persona_key: str):
     # Modelo atualizado conforme sua solicitação
-    uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
+    uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime"
     persona = personas.get(persona_key)
     if not persona: raise ValueError(f"Persona '{persona_key}' not found.")
 
