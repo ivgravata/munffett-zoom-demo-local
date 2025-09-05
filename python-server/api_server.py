@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import base64
 from datetime import datetime
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
@@ -9,6 +10,8 @@ import aiohttp
 from aiohttp import web
 import websockets
 import aiohttp_cors
+from elevenlabs.client import AsyncElevenLabs
+from elevenlabs import Voice, VoiceSettings
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -19,11 +22,16 @@ load_dotenv()
 PORT = int(os.getenv("PORT", 8000))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RECALL_API_KEY = os.getenv("RECALL_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+
 
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY must be set in environment variables")
 if not RECALL_API_KEY:
     raise ValueError("RECALL_API_KEY must be set in environment variables")
+if not ELEVENLABS_API_KEY:
+    raise ValueError("ELEVENLABS_API_KEY must be set in environment variables")
+
 
 active_bots: Dict[str, Dict[str, Any]] = {}
 
@@ -100,7 +108,6 @@ class RecallAPIClient:
                     raise Exception(f"Failed to create bot: {text}")
 
 async def connect_to_openai_with_persona(persona_key: str):
-    # Modelo atualizado conforme sua solicitação
     uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
     persona = personas.get(persona_key)
     if not persona: raise ValueError(f"Persona '{persona_key}' not found.")
@@ -120,9 +127,9 @@ async def connect_to_openai_with_persona(persona_key: str):
         update_session = {
             "type": "session.update",
             "session": {
-                "instructions": persona["instructions"], "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16", "modalities": ["text", "audio"],
-                "voice": {"id": "ash"},  # Corrected format
+                "instructions": persona["instructions"], 
+                "input_audio_format": "pcm16",
+                "modalities": ["text"],
                 "turn_detection": {"type": "server_vad"}
             },
         }
@@ -145,15 +152,19 @@ async def websocket_handler(request):
         openai_ws, session_created = await connect_to_openai_with_persona(persona_key)
         await ws.send_str(json.dumps(session_created))
         
-        # Lógica de relay com o "guardião" da persona
+        elevenlabs_client = AsyncElevenLabs(api_key=ELEVENLABS_API_KEY)
+
         async def relay_to_openai():
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     event = json.loads(msg.data)
-                    # SOLUÇÃO: Impede que o cliente sobrescreva as instruções
+                    # **FIX 1: Prevent client from overriding crucial server settings**
                     if event.get("type") == "session.update" and "session" in event:
-                        if "instructions" in event["session"]:
-                            del event["session"]["instructions"]
+                        session = event["session"]
+                        session.pop("instructions", None)
+                        session.pop("modalities", None)
+                        session.pop("voice", None)
+                        session.pop("output_audio_format", None)
                     
                     if not openai_ws.closed:
                         await openai_ws.send(json.dumps(event))
@@ -163,7 +174,38 @@ async def websocket_handler(request):
         async def relay_from_openai():
             async for msg in openai_ws:
                 if not ws.closed:
-                    await ws.send_str(msg)
+                    try:
+                        data = json.loads(msg)
+                        if data.get("type") == "conversation.item.updated" and data.get("item", {}).get("delta", {}).get("text"):
+                            text_chunk = data.get("item", {}).get("delta", {}).get("text")
+                            
+                            if text_chunk:
+                                audio_stream = await elevenlabs_client.generate(
+                                    text=text_chunk,
+                                    voice=Voice(
+                                        voice_id="jn34bTlmmOgOJU9XfPuy",
+                                        settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)
+                                    ),
+                                    model="eleven_multilingual_v2",
+                                    stream=True
+                                )
+                                
+                                async for chunk in audio_stream:
+                                    audio_event = {
+                                        "type": "conversation.item.updated",
+                                        "item": {
+                                            "id": data.get("item", {}).get("id"),
+                                            "delta": {
+                                                # **FIX 2: Use base64 encoding for audio data**
+                                                "audio": base64.b64encode(chunk).decode('utf-8')
+                                            }
+                                        }
+                                    }
+                                    await ws.send_str(json.dumps(audio_event))
+                        else:
+                            await ws.send_str(msg)
+                    except json.JSONDecodeError:
+                        await ws.send_str(msg)
 
         await asyncio.gather(relay_to_openai(), relay_from_openai())
         
