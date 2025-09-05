@@ -125,7 +125,18 @@ export function App() {
       client.on("conversation.updated", async ({ item, delta }: any) => {
         client.conversation.getItems();
         if (delta?.audio) {
-          wavStreamPlayer.add16BitPCM(delta.audio, item.id);
+          // **FIX: Decode base64 audio string from server before playing**
+          let audioBuffer = delta.audio;
+          if (typeof audioBuffer === "string") {
+            const binaryString = window.atob(audioBuffer);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            audioBuffer = bytes.buffer;
+          }
+          wavStreamPlayer.add16BitPCM(audioBuffer, item.id);
         }
         if (item.status === "completed" && item.formatted.audio?.length) {
           const wavFile = await WavRecorder.decode(
