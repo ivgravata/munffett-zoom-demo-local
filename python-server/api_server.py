@@ -158,7 +158,6 @@ async def websocket_handler(request):
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     event = json.loads(msg.data)
-                    # **FIX 1: Prevent client from overriding crucial server settings**
                     if event.get("type") == "session.update" and "session" in event:
                         session = event["session"]
                         session.pop("instructions", None)
@@ -187,7 +186,8 @@ async def websocket_handler(request):
                                         settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)
                                     ),
                                     model="eleven_multilingual_v2",
-                                    stream=True
+                                    stream=True,
+                                    output_format="pcm_24000" # Explicitly request client's sample rate
                                 )
                                 
                                 async for chunk in audio_stream:
@@ -196,7 +196,6 @@ async def websocket_handler(request):
                                         "item": {
                                             "id": data.get("item", {}).get("id"),
                                             "delta": {
-                                                # **FIX 2: Use base64 encoding for audio data**
                                                 "audio": base64.b64encode(chunk).decode('utf-8')
                                             }
                                         }
