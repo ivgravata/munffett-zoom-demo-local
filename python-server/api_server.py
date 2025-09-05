@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import base64
 from datetime import datetime
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ from aiohttp import web
 import websockets
 import aiohttp_cors
 from elevenlabs.client import AsyncElevenLabs
-from elevenlabs import Voice, VoiceSettings, play
+from elevenlabs import Voice, VoiceSettings
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -107,7 +108,6 @@ class RecallAPIClient:
                     raise Exception(f"Failed to create bot: {text}")
 
 async def connect_to_openai_with_persona(persona_key: str):
-    # Modelo atualizado conforme sua solicitação
     uri = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
     persona = personas.get(persona_key)
     if not persona: raise ValueError(f"Persona '{persona_key}' not found.")
@@ -158,9 +158,13 @@ async def websocket_handler(request):
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     event = json.loads(msg.data)
+                    # **FIX 1: Prevent client from overriding crucial server settings**
                     if event.get("type") == "session.update" and "session" in event:
-                        if "instructions" in event["session"]:
-                            del event["session"]["instructions"]
+                        session = event["session"]
+                        session.pop("instructions", None)
+                        session.pop("modalities", None)
+                        session.pop("voice", None)
+                        session.pop("output_audio_format", None)
                     
                     if not openai_ws.closed:
                         await openai_ws.send(json.dumps(event))
@@ -175,37 +179,33 @@ async def websocket_handler(request):
                         if data.get("type") == "conversation.item.updated" and data.get("item", {}).get("delta", {}).get("text"):
                             text_chunk = data.get("item", {}).get("delta", {}).get("text")
                             
-                            # Generate audio from ElevenLabs and stream it
-                            audio_stream = await elevenlabs_client.generate(
-                                text=text_chunk,
-                                voice=Voice(
-                                    voice_id="jn34bTlmmOgOJU9XfPuy",
-                                    settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)
-                                ),
-                                model="eleven_multilingual_v2",
-                                stream=True
-                            )
-                            
-                            async for chunk in audio_stream:
-                                audio_event = {
-                                    "type": "conversation.item.updated",
-                                    "item": {
-                                        "id": data.get("item", {}).get("id"),
-                                        "delta": {
-                                            "audio": chunk.hex()
+                            if text_chunk:
+                                audio_stream = await elevenlabs_client.generate(
+                                    text=text_chunk,
+                                    voice=Voice(
+                                        voice_id="jn34bTlmmOgOJU9XfPuy",
+                                        settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)
+                                    ),
+                                    model="eleven_multilingual_v2",
+                                    stream=True
+                                )
+                                
+                                async for chunk in audio_stream:
+                                    audio_event = {
+                                        "type": "conversation.item.updated",
+                                        "item": {
+                                            "id": data.get("item", {}).get("id"),
+                                            "delta": {
+                                                # **FIX 2: Use base64 encoding for audio data**
+                                                "audio": base64.b64encode(chunk).decode('utf-8')
+                                            }
                                         }
                                     }
-                                }
-                                await ws.send_str(json.dumps(audio_event))
-
+                                    await ws.send_str(json.dumps(audio_event))
                         else:
                             await ws.send_str(msg)
                     except json.JSONDecodeError:
-                        # Not a JSON message, likely audio data or something else.
-                        # Depending on what you expect, you might want to handle it differently.
-                        # For now, we'll just forward it.
                         await ws.send_str(msg)
-
 
         await asyncio.gather(relay_to_openai(), relay_from_openai())
         
