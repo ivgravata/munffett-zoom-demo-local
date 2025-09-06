@@ -1,32 +1,29 @@
 # api_server.py
 # Servidor mínimo para TTS via ElevenLabs (streaming) – útil p/ testes locais.
-# Requer: pip install fastapi uvicorn elevenlabs>=1.0.0 python-dotenv
+# Requer: fastapi, uvicorn, elevenlabs>=1.0.0
+# Rode local: uvicorn api_server:app --host 0.0.0.0 --port 8081
 
 import os
-import asyncio
 from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, PlainTextResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
-# ElevenLabs SDK (usar nomes corretos: model_id / voice_id)
+# ElevenLabs SDK (parâmetros corretos: model_id / voice_id)
 from elevenlabs.client import AsyncElevenLabs
 from elevenlabs import VoiceSettings
 
-load_dotenv()
-
-ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
-ELEVEN_MODEL_ID = os.getenv("ELEVEN_MODEL_ID", "eleven_multilingual_v2")
-DEFAULT_OUTPUT = os.getenv("ELEVEN_OUTPUT_FORMAT", "mp3_44100_128")  # ou "pcm_16000"
+ELEVEN_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVEN_VOICE_ID = os.environ.get("ELEVEN_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+ELEVEN_MODEL_ID = os.environ.get("ELEVEN_MODEL_ID", "eleven_multilingual_v2")
+DEFAULT_OUTPUT = os.environ.get("ELEVEN_OUTPUT_FORMAT", "mp3_44100_128")  # ou "pcm_16000"
 
 if not ELEVEN_API_KEY:
-    raise RuntimeError("Faltou ELEVENLABS_API_KEY no .env")
+    raise RuntimeError("Defina ELEVENLABS_API_KEY nas Variables do Railway")
 
 eleven = AsyncElevenLabs(api_key=ELEVEN_API_KEY)
-app = FastAPI(title="Munffett TTS (ElevenLabs)")
+app = FastAPI(title="Munffett TTS (ElevenLabs) – sem .env")
 
 class TTSPayload(BaseModel):
     text: str
@@ -138,6 +135,3 @@ async def eleven_tts_post(payload: TTSPayload):
         "X-Format": fmt,
     }
     return StreamingResponse(gen, media_type=_content_type(fmt), headers=headers)
-
-# Execução local:
-# uvicorn api_server:app --host 0.0.0.0 --port 8081
