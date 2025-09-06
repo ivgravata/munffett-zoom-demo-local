@@ -162,10 +162,11 @@ async def websocket_handler(request):
                             item_id = data.get("item_id")
                             
                             if text_chunk and item_id:
-                                # **FIX: Use the correct method `text_to_speech.stream`**
+                                # **FIX: Pass voice_id and voice_settings as separate arguments**
                                 audio_stream = await elevenlabs_client.text_to_speech.stream(
                                     text=text_chunk,
-                                    voice=Voice(voice_id="jn34bTlmmOgOJU9XfPuy", settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)),
+                                    voice_id="jn34bTlmmOgOJU9XfPuy",
+                                    voice_settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True),
                                     model="eleven_multilingual_v2",
                                     output_format="pcm_24000"
                                 )
