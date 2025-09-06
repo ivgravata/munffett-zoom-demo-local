@@ -1,29 +1,24 @@
 # api_server.py
-# Servidor mínimo para TTS via ElevenLabs (streaming) – útil p/ testes locais.
-# Requer: fastapi, uvicorn, elevenlabs>=1.0.0
-# Rode local: uvicorn api_server:app --host 0.0.0.0 --port 8081
+# ElevenLabs TTS streaming helper — no .env, reads os.environ only.
 
 import os
 from typing import AsyncGenerator, Optional
-
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse, PlainTextResponse
 from pydantic import BaseModel
-
-# ElevenLabs SDK (parâmetros corretos: model_id / voice_id)
 from elevenlabs.client import AsyncElevenLabs
 from elevenlabs import VoiceSettings
 
 ELEVEN_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVEN_VOICE_ID = os.environ.get("ELEVEN_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
 ELEVEN_MODEL_ID = os.environ.get("ELEVEN_MODEL_ID", "eleven_multilingual_v2")
-DEFAULT_OUTPUT = os.environ.get("ELEVEN_OUTPUT_FORMAT", "mp3_44100_128")  # ou "pcm_16000"
+DEFAULT_OUTPUT = os.environ.get("ELEVEN_OUTPUT_FORMAT", "mp3_44100_128")  # or "pcm_16000"
 
 if not ELEVEN_API_KEY:
-    raise RuntimeError("Defina ELEVENLABS_API_KEY nas Variables do Railway")
+    raise RuntimeError("Set ELEVENLABS_API_KEY in Railway Variables")
 
 eleven = AsyncElevenLabs(api_key=ELEVEN_API_KEY)
-app = FastAPI(title="Munffett TTS (ElevenLabs) – sem .env")
+app = FastAPI(title="Munffett TTS (ElevenLabs)")
 
 class TTSPayload(BaseModel):
     text: str
@@ -40,13 +35,9 @@ async def health() -> str:
     return "ok"
 
 def _content_type(fmt: str) -> str:
-    if fmt.startswith("mp3"):
-        return "audio/mpeg"
-    if fmt.startswith("pcm"):
-        # raw 16-bit little-endian mono
-        return "audio/L16"
-    if fmt.startswith("wav"):
-        return "audio/wav"
+    if fmt.startswith("mp3"): return "audio/mpeg"
+    if fmt.startswith("pcm"): return "audio/L16"
+    if fmt.startswith("wav"): return "audio/wav"
     return "application/octet-stream"
 
 async def _stream_tts(
@@ -59,15 +50,9 @@ async def _stream_tts(
     similarity_boost: float,
     use_speaker_boost: bool,
 ) -> AsyncGenerator[bytes, None]:
-    """
-    Gera áudio em streaming usando parâmetros CORRETOS da SDK:
-    - voice_id (não "voice")
-    - model_id (não "model")
-    - output_format (ex.: mp3_44100_128 ou pcm_16000)
-    """
     stream = await eleven.text_to_speech.stream(
         voice_id=voice_id,
-        model_id=model_id,
+        model_id=model_id,           # <- correct param (not "model")
         text=text,
         output_format=output_format,
         voice_settings=VoiceSettings(
@@ -92,23 +77,8 @@ async def eleven_tts_get(
     v = voice_id or ELEVEN_VOICE_ID
     m = model_id or ELEVEN_MODEL_ID
     fmt = output_format or DEFAULT_OUTPUT
-
-    gen = _stream_tts(
-        text=text,
-        voice_id=v,
-        model_id=m,
-        output_format=fmt,
-        speed=1.0,
-        stability=0.15,
-        similarity_boost=0.9,
-        use_speaker_boost=True,
-    )
-    headers = {
-        "Cache-Control": "no-store",
-        "X-Voice-Id": v,
-        "X-Model-Id": m,
-        "X-Format": fmt,
-    }
+    gen = _stream_tts(text, v, m, fmt, 1.0, 0.15, 0.9, True)
+    headers = {"Cache-Control": "no-store", "X-Voice-Id": v, "X-Model-Id": m, "X-Format": fmt}
     return StreamingResponse(gen, media_type=_content_type(fmt), headers=headers)
 
 @app.post("/eleven/tts")
@@ -118,20 +88,8 @@ async def eleven_tts_post(payload: TTSPayload):
     v = payload.voice_id or ELEVEN_VOICE_ID
     m = payload.model_id or ELEVEN_MODEL_ID
     fmt = payload.output_format or DEFAULT_OUTPUT
-    gen = _stream_tts(
-        text=payload.text.strip(),
-        voice_id=v,
-        model_id=m,
-        output_format=fmt,
-        speed=payload.speed or 1.0,
-        stability=payload.stability or 0.15,
-        similarity_boost=payload.similarity_boost or 0.9,
-        use_speaker_boost=payload.use_speaker_boost if payload.use_speaker_boost is not None else True,
-    )
-    headers = {
-        "Cache-Control": "no-store",
-        "X-Voice-Id": v,
-        "X-Model-Id": m,
-        "X-Format": fmt,
-    }
+    gen = _stream_tts(payload.text.strip(), v, m, fmt, payload.speed or 1.0,
+                      payload.stability or 0.15, payload.similarity_boost or 0.9,
+                      payload.use_speaker_boost if payload.use_speaker_boost is not None else True)
+    headers = {"Cache-Control": "no-store", "X-Voice-Id": v, "X-Model-Id": m, "X-Format": fmt}
     return StreamingResponse(gen, media_type=_content_type(fmt), headers=headers)
