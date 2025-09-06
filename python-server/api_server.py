@@ -11,7 +11,7 @@ from aiohttp import web
 import websockets
 import aiohttp_cors
 from elevenlabs.client import AsyncElevenLabs
-from elevenlabs import Voice, VoiceSettings
+from elevenlabs import VoiceSettings # Removido 'Voice' que não era necessário
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -162,11 +162,16 @@ async def websocket_handler(request):
                             item_id = data.get("item_id")
                             
                             if text_chunk and item_id:
-                                # **FIX: Pass voice_id and voice_settings as separate arguments**
+                                # **FIX: Pass voice arguments correctly**
                                 audio_stream = await elevenlabs_client.text_to_speech.stream(
                                     text=text_chunk,
                                     voice_id="jn34bTlmmOgOJU9XfPuy",
-                                    voice_settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True),
+                                    voice_settings=VoiceSettings(
+                                        stability=0.71, 
+                                        similarity_boost=0.5, 
+                                        style=0.0, 
+                                        use_speaker_boost=True
+                                    ),
                                     model="eleven_multilingual_v2",
                                     output_format="pcm_24000"
                                 )
