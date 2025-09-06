@@ -11,6 +11,7 @@ from aiohttp import web
 import websockets
 import aiohttp_cors
 from elevenlabs.client import AsyncElevenLabs
+from elevenlabs import VoiceSettings # Removido 'Voice' que não era necessário
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -63,10 +64,10 @@ Scope & behavior:
 • You can discuss any company, but you are a true expert on the companies listed above.
 • Start with the key takeaway, but always explain your reasoning. Focus on the 'why' behind a business, not just the 'what'.
 • No personalized investment advice; keep it educational, focusing on principles and business analysis.
-• If you don't know something, say so. Explain what you'd need to read or check to find an answer (e.g., the 10-K, an earnings call transcript, etc.).
+• If you don't know something, say so. Explain what you’d need to read or check to find an answer (e.g., the 10-K, an earnings call transcript, etc.).
 
 Zoom etiquette:
-• Acknowledge new speakers briefly; don't monologue.
+• Acknowledge new speakers briefly; don’t monologue.
 • If audio is unclear, ask concisely for a repeat."""
       }
 }
@@ -121,13 +122,7 @@ async def connect_to_openai_with_persona(persona_key: str):
         
         update_session = {
             "type": "session.update",
-            "session": { 
-                "instructions": persona["instructions"], 
-                "input_audio_format": "pcm16", 
-                "output_audio_format": "pcm16",
-                "modalities": ["text", "audio"], 
-                "turn_detection": {"type": "server_vad"} 
-            },
+            "session": { "instructions": persona["instructions"], "input_audio_format": "pcm16", "modalities": ["text"], "turn_detection": {"type": "server_vad"} },
         }
         await ws.send(json.dumps(update_session))
         return ws, event
@@ -153,56 +148,43 @@ async def websocket_handler(request):
                     event = json.loads(msg.data)
                     if event.get("type") == "session.update" and "session" in event:
                         session = event["session"]
-                        session.pop("instructions", None)
-                        session.pop("modalities", None)
-                        session.pop("voice", None)
-                    if not openai_ws.closed: 
-                        await openai_ws.send(json.dumps(event))
-                elif msg.type == aiohttp.WSMsgType.ERROR: 
-                    break
+                        session.pop("instructions", None); session.pop("modalities", None); session.pop("voice", None); session.pop("output_audio_format", None)
+                    if not openai_ws.closed: await openai_ws.send(json.dumps(event))
+                elif msg.type == aiohttp.WSMsgType.ERROR: break
 
         async def relay_from_openai():
             async for msg in openai_ws:
                 if not ws.closed:
                     try:
                         data = json.loads(msg)
-                        
-                        # Se for áudio da OpenAI, vamos substituir pela voz do ElevenLabs
-                        if data.get("type") == "response.audio.delta":
-                            # Ignorar o áudio da OpenAI, será substituído pelo ElevenLabs
-                            continue
-                        
-                        # Se for texto, converter para áudio usando ElevenLabs
-                        elif data.get("type") == "response.text.delta":
+                        if data.get("type") == "response.text.delta":
                             text_chunk = data.get("delta")
                             item_id = data.get("item_id")
                             
                             if text_chunk and item_id:
-                                try:
-                                    # **VERSÃO CORRIGIDA - Usando convert ao invés de stream**
-                                    audio_bytes = await elevenlabs_client.text_to_speech.convert(
-                                        text=text_chunk,
-                                        voice_id="jn34bTlmmOgOJU9XfPuy",  # Voz do Munffett
-                                        output_format="pcm_24000"
-                                    )
-                                    
-                                    if audio_bytes:
-                                        # Enviar como delta de áudio para o cliente
+                                # **FIX: Pass voice arguments correctly**
+                                audio_stream = await elevenlabs_client.text_to_speech.stream(
+                                    text=text_chunk,
+                                    voice_id="jn34bTlmmOgOJU9XfPuy",
+                                    voice_settings=VoiceSettings(
+                                        stability=0.71, 
+                                        similarity_boost=0.5, 
+                                        style=0.0, 
+                                        use_speaker_boost=True
+                                    ),
+                                    model="eleven_multilingual_v2",
+                                    output_format="pcm_24000"
+                                )
+                                
+                                async for chunk in audio_stream:
+                                    if chunk:
                                         audio_event = {
-                                            "type": "response.audio.delta",
-                                            "item_id": item_id,
-                                            "content_index": 0,
-                                            "delta": base64.b64encode(audio_bytes).decode('utf-8')
+                                            "type": "conversation.item.updated",
+                                            "item": { "id": item_id, "delta": { "audio": base64.b64encode(chunk).decode('utf-8') } }
                                         }
                                         await ws.send_str(json.dumps(audio_event))
-                                except Exception as e:
-                                    logger.error(f"ElevenLabs TTS error: {e}")
-                                    # Se falhar, enviar o texto normal
-                                    await ws.send_str(msg)
                         else:
-                            # Para outros tipos de mensagem, repassar normalmente
                             await ws.send_str(msg)
-                            
                     except Exception as e:
                         logger.error(f"ERROR in relay_from_openai: {e}", exc_info=True)
 
@@ -210,18 +192,15 @@ async def websocket_handler(request):
     except Exception as e:
         logger.error(f"WebSocket handler error: {e}")
     finally:
-        if openai_ws and not openai_ws.closed: 
-            await openai_ws.close()
-        if not ws.closed: 
-            await ws.close()
+        if openai_ws and not openai_ws.closed: await openai_ws.close()
+        if not ws.closed: await ws.close()
     return ws
 
 async def create_bot(request):
     try:
         data = await request.json()
         meeting_url = data.get('meeting_url')
-        if not meeting_url: 
-            return web.json_response({'error': 'meeting_url is required'}, status=400)
+        if not meeting_url: return web.json_response({'error': 'meeting_url is required'}, status=400)
         persona_key = "munffett"
         recall_client = RecallAPIClient(RECALL_API_KEY)
         bot_data = await recall_client.create_bot(meeting_url, personas[persona_key]["name"], persona_key)
@@ -236,19 +215,11 @@ async def ping(request):
 
 def create_app():
     app = web.Application()
-    cors = aiohttp_cors.setup(app, defaults={ 
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=True, 
-            expose_headers="*", 
-            allow_headers="*", 
-            allow_methods="*"
-        ) 
-    })
+    cors = aiohttp_cors.setup(app, defaults={ "*": aiohttp_cors.ResourceOptions(allow_credentials=True, expose_headers="*", allow_headers="*", allow_methods="*") })
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/api/recall/create', create_bot)
     app.router.add_get('/api/recall/ping', ping)
-    for route in list(app.router.routes()): 
-        cors.add(route)
+    for route in list(app.router.routes()): cors.add(route)
     return app
 
 if __name__ == '__main__':
