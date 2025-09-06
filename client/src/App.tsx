@@ -38,9 +38,15 @@ export function App() {
     if (!client || !wavRecorder || !wavStreamPlayer) return;
 
     try {
+      // Connect to microphone
       await wavRecorder.begin();
+
+      // Connect to audio output
       await wavStreamPlayer.connect();
+
+      // Connect to realtime API
       await client.connect();
+
       setConnectionStatus("connected");
 
       client.on("error", (event: any) => {
@@ -52,10 +58,24 @@ export function App() {
         setConnectionStatus("disconnected");
       });
 
-      client.sendUserMessageContent([{ type: `input_text`, text: `Hello!` }]);
-      client.updateSession({ turn_detection: { type: "server_vad" } });
+      client.sendUserMessageContent([
+        {
+          type: `input_text`,
+          text: `Hello!`,
+        },
+      ]);
 
-      if (wavRecorder.recording) await wavRecorder.pause();
+      // Always use VAD mode
+      client.updateSession({
+        turn_detection: { type: "server_vad" },
+      });
+
+      // Check if we're already recording before trying to pause
+      if (wavRecorder.recording) {
+        await wavRecorder.pause();
+      }
+
+      // Check if we're already paused before trying to record
       if (!wavRecorder.recording) {
         await wavRecorder.record((data: { mono: Float32Array }) =>
           client.appendInputAudio(data.mono)
@@ -78,14 +98,22 @@ export function App() {
         }
       })();
 
+  /**
+   * Core RealtimeClient and audio capture setup
+   * Set all of our instructions, tools, events and more
+   */
   useEffect(() => {
+    // Only run the effect if there's no error
     if (!errorMessage) {
       connectConversation();
       const wavStreamPlayer = wavStreamPlayerRef.current;
       const client = clientRef.current;
       if (!client || !wavStreamPlayer) return;
 
+      // Set instructions
       client.updateSession({ instructions: instructions });
+
+      // handle realtime events from client + server for event logging
       client.on("error", (event: any) => console.error(event));
       client.on("conversation.interrupted", async () => {
         const trackSampleOffset = await wavStreamPlayer.interrupt();
@@ -94,43 +122,55 @@ export function App() {
           await client.cancelResponse(trackId, offset);
         }
       });
-      
       client.on("conversation.updated", async ({ item, delta }: any) => {
         client.conversation.getItems();
         if (delta?.audio) {
-          try {
-            let audioBuffer = delta.audio;
-            if (typeof audioBuffer === "string") {
-              const binaryString = window.atob(audioBuffer);
-              const len = binaryString.length;
-              const bytes = new Uint8Array(len);
-              for (let i = 0; i < len; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-              }
-              audioBuffer = bytes.buffer;
+          // **FIX: Decode base64 audio string from server before playing**
+          let audioBuffer = delta.audio;
+          if (typeof audioBuffer === "string") {
+            const binaryString = window.atob(audioBuffer);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
             }
-            wavStreamPlayer.add16BitPCM(audioBuffer, item.id);
-          } catch (error) {
-            console.error("Error processing or playing audio:", error);
+            audioBuffer = bytes.buffer;
           }
+          wavStreamPlayer.add16BitPCM(audioBuffer, item.id);
         }
         if (item.status === "completed" && item.formatted.audio?.length) {
-          const wavFile = await WavRecorder.decode(item.formatted.audio, 24000, 24000);
+          const wavFile = await WavRecorder.decode(
+            item.formatted.audio,
+            24000,
+            24000
+          );
           item.formatted.file = wavFile;
         }
       });
 
-      return () => { client.reset(); };
+      return () => {
+        client.reset();
+      };
     }
-  }, [errorMessage, connectConversation]);
+  }, [errorMessage]);
 
   return (
     <div className="app-container">
       <div className="status-indicator">
-        <div className={`status-dot ${errorMessage ? "disconnected" : connectionStatus}`} />
+        <div
+          className={`status-dot ${
+            errorMessage ? "disconnected" : connectionStatus
+          }`}
+        />
         <div className="status-text">
           <div className="status-label">
-            {errorMessage ? "Error:" : connectionStatus === "connecting" ? "Connecting to:" : connectionStatus === "connected" ? "Connected to:" : "Failed to connect to:"}
+            {errorMessage
+              ? "Error:"
+              : connectionStatus === "connecting"
+              ? "Connecting to:"
+              : connectionStatus === "connected"
+              ? "Connected to:"
+              : "Failed to connect to:"}
           </div>
           <div className="status-url">{errorMessage || RELAY_SERVER_URL}</div>
         </div>
