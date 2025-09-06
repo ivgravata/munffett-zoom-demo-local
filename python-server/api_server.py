@@ -157,20 +157,21 @@ async def websocket_handler(request):
                 if not ws.closed:
                     try:
                         data = json.loads(msg)
-                        # **FIX: Listen for the correct event type 'response.text.delta'**
                         if data.get("type") == "response.text.delta":
                             text_chunk = data.get("delta")
                             item_id = data.get("item_id")
                             
                             if text_chunk and item_id:
-                                audio_stream = await elevenlabs_client.generate(
+                                # **FIX: Use the correct method `text_to_speech.stream`**
+                                audio_stream = await elevenlabs_client.text_to_speech.stream(
                                     text=text_chunk,
                                     voice=Voice(voice_id="jn34bTlmmOgOJU9XfPuy", settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)),
-                                    model="eleven_multilingual_v2", stream=True, output_format="pcm_24000"
+                                    model="eleven_multilingual_v2",
+                                    output_format="pcm_24000"
                                 )
+                                
                                 async for chunk in audio_stream:
                                     if chunk:
-                                        # Re-package the audio into the event type the client expects
                                         audio_event = {
                                             "type": "conversation.item.updated",
                                             "item": { "id": item_id, "delta": { "audio": base64.b64encode(chunk).decode('utf-8') } }
