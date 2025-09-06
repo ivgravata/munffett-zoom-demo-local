@@ -1,23 +1,24 @@
 // index.js
-// Node 18+ recomendado. Instale deps: npm i express ws axios dotenv
-// Se já usa outro framework no repo, mantenha as rotas e substitua a lógica abaixo.
-
-require('dotenv').config();
+// Bridge OpenAI Realtime ↔ Recall/Zoom com voice-swap ElevenLabs
+// Sem .env: tudo vem de process.env (Railway Variables)
 
 const http = require('http');
 const express = require('express');
 const axios = require('axios');
 const WebSocket = require('ws');
-const { URL } = require('url');
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// --- Config OpenAI Realtime ---
+// --- OpenAI Realtime ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const MODEL_REALTIME = process.env.MODEL_REALTIME || 'gpt-4o-realtime-preview-2025-05-08';
+if (!OPENAI_API_KEY) {
+  console.error('Defina OPENAI_API_KEY nas Variables do Railway');
+  process.exit(1);
+}
 
 // --- Voice-swap (ElevenLabs) ---
 const VOICE_SWAP = (process.env.VOICE_SWAP || 'elevenlabs').toLowerCase() === 'elevenlabs';
@@ -25,28 +26,29 @@ const ELEVEN_API_KEY = process.env.ELEVENLABS_API_KEY || '';
 const ELEVEN_VOICE_ID = process.env.ELEVEN_VOICE_ID || 'JBFqnCBsd6RMkjVDRZzb';
 const ELEVEN_MODEL_ID = process.env.ELEVEN_MODEL_ID || 'eleven_multilingual_v2';
 
-// --- Recall Output Audio ---
-const RECALL_API_KEY = process.env.RECALL_API_KEY || '';
-// Opcional: defina RECALL_BOT_ID aqui ou passe ?bot_id= na conexão WS
-const RECALL_BOT_ID_DEFAULT = process.env.RECALL_BOT_ID || '';
-
-if (!OPENAI_API_KEY) {
-  console.error('Faltou OPENAI_API_KEY no .env');
+if (VOICE_SWAP && !ELEVEN_API_KEY) {
+  console.error('VOICE_SWAP=elevenlabs requer ELEVENLABS_API_KEY');
   process.exit(1);
 }
 
-if (VOICE_SWAP && (!ELEVEN_API_KEY || !RECALL_API_KEY)) {
-  console.error('VOICE_SWAP=elevenlabs requer ELEVENLABS_API_KEY e RECALL_API_KEY');
+// --- Saída de áudio: duas rotas ---
+// 1) PLAY_TO=playUrl  -> usamos ?playUrl=... (passado na URL do WS /recall) e enviamos PCM16
+// 2) PLAY_TO=recall   -> usamos Recall Output Audio com BOT_ID/RECALL_API_KEY e enviamos MP3
+const PLAY_TO = (process.env.PLAY_TO || 'playUrl').toLowerCase();
+const RECALL_API_KEY = process.env.RECALL_API_KEY || '';
+const RECALL_BOT_ID_DEFAULT = process.env.RECALL_BOT_ID || '';
+
+if (PLAY_TO === 'recall' && !RECALL_API_KEY) {
+  console.error('PLAY_TO=recall requer RECALL_API_KEY (e BOT_ID via env ou query)');
   process.exit(1);
 }
 
 // Health
 app.get('/health', (_, res) => res.status(200).send('ok'));
 
-// --- Página de depuração (/player) e WS auxiliar (/ws) ---
+// --- Página de debug (opcional) ---
 const players = new Set();
 const server = http.createServer(app);
-
 const wssPlayers = new WebSocket.Server({ server, path: '/ws' });
 wssPlayers.on('connection', (ws) => {
   players.add(ws);
@@ -54,12 +56,9 @@ wssPlayers.on('connection', (ws) => {
 });
 function broadcastSay(text) {
   const msg = JSON.stringify({ type: 'say', text });
-  for (const ws of players) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  }
+  for (const ws of players) if (ws.readyState === WebSocket.OPEN) ws.send(msg);
 }
 
-// Página simples que toca qualquer texto empurrado por /ws (debug fora do Zoom)
 app.get('/player', (_, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(`<!doctype html>
@@ -67,7 +66,7 @@ app.get('/player', (_, res) => {
 <style>body{font:16px system-ui;background:#0b0b0c;color:#eaeaea;padding:24px}#log{white-space:pre-wrap;background:#111;padding:12px;border-radius:12px;max-height:45vh;overflow:auto}</style>
 </head><body>
 <h2>Munffett Player</h2>
-<p>Recebe <code>say</code> via WebSocket e toca TTS do ElevenLabs (para depurar localmente).</p>
+<p>Recebe <code>say</code> via WebSocket e toca TTS do ElevenLabs (debug fora do Zoom).</p>
 <div id="log"></div>
 <audio id="player" autoplay></audio>
 <script>
@@ -92,32 +91,17 @@ ws.onmessage = async (ev)=>{
 </body></html>`);
 });
 
-// Endpoint que faz proxy do stream ElevenLabs → browser (debug/local)
+// Proxy p/ teste local de TTS (MP3)
 app.get('/eleven/tts', async (req, res) => {
   try {
     const text = (req.query.text || '').toString();
     if (!text) return res.status(400).send('missing ?text');
 
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVEN_VOICE_ID)}/stream`;
-    const body = {
-      text,
-      model_id: ELEVEN_MODEL_ID,      // <- nome correto (não use "model")
-      output_format: 'mp3_44100_128', // fácil de tocar no browser
-      voice_settings: {
-        stability: 0.15,
-        similarity_boost: 0.9,
-        use_speaker_boost: true,
-        style: 0.0,
-        speed: 1.0
-      }
-    };
+    const body = { text, model_id: ELEVEN_MODEL_ID, output_format: 'mp3_44100_128' };
 
     const resp = await axios.post(url, body, {
-      headers: {
-        'xi-api-key': ELEVEN_API_KEY,
-        'Content-Type': 'application/json',
-        'Accept': 'audio/mpeg'
-      },
+      headers: { 'xi-api-key': ELEVEN_API_KEY, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
       responseType: 'stream',
       timeout: 60000
     });
@@ -131,24 +115,45 @@ app.get('/eleven/tts', async (req, res) => {
   }
 });
 
-// Função utilitária: sintetiza MP3 (buffer → base64)
+// --- util: ElevenLabs → MP3 (base64) ---
 async function elevenSynthesizeMp3Base64(text) {
   const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVEN_VOICE_ID)}/stream`;
-  const body = {
-    text,
-    model_id: ELEVEN_MODEL_ID,
-    output_format: 'mp3_44100_128'
-  };
+  const body = { text, model_id: ELEVEN_MODEL_ID, output_format: 'mp3_44100_128' };
   const resp = await axios.post(url, body, {
     headers: { 'xi-api-key': ELEVEN_API_KEY, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
     responseType: 'arraybuffer',
     timeout: 60000
   });
-  const b64 = Buffer.from(resp.data).toString('base64');
-  return b64;
+  return Buffer.from(resp.data).toString('base64');
 }
 
-// Envia MP3 para o Zoom via Recall Output Audio
+// --- util: ElevenLabs → PCM16 (ArrayBuffer) ---
+async function elevenSynthesizePcm16(text) {
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(ELEVEN_VOICE_ID)}/stream`;
+  const body = { text, model_id: ELEVEN_MODEL_ID, output_format: 'pcm_16000' };
+  const resp = await axios.post(url, body, {
+    headers: { 'xi-api-key': ELEVEN_API_KEY, 'Content-Type': 'application/json' },
+    responseType: 'arraybuffer',
+    timeout: 60000
+  });
+  return Buffer.from(resp.data); // raw PCM16 mono 16kHz
+}
+
+// --- util: enviar PCM em um POST para playUrl (Recall Output Media) ---
+async function sendPcmToPlayUrl(playUrl, pcmBuffer, rateHz = 16000) {
+  // opcional: fatiar em blocos menores (ex.: 32k) para latência menor
+  const CHUNK = 32 * 1024;
+  for (let i = 0; i < pcmBuffer.length; i += CHUNK) {
+    const slice = pcmBuffer.subarray(i, Math.min(i + CHUNK, pcmBuffer.length));
+    const b64 = slice.toString('base64');
+    await axios.post(playUrl, { audio: b64, encoding: 'pcm16', sample_rate_hz: rateHz }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 20000
+    }).catch(() => {});
+  }
+}
+
+// --- util: Recall Output Audio (MP3 base64) ---
 async function recallOutputAudio(botId, base64Mp3) {
   if (!botId) throw new Error('botId ausente (defina RECALL_BOT_ID ou passe ?bot_id= na conexão)');
   const url = `https://us-east-1.recall.ai/api/v1/bot/${encodeURIComponent(botId)}/output_audio/`;
@@ -158,40 +163,35 @@ async function recallOutputAudio(botId, base64Mp3) {
   });
 }
 
-// -------------------- Bridge Realtime <-> (seu front/Recall) --------------------
+// -------------------- Bridge principal --------------------
 const wssBridge = new WebSocket.Server({ server, path: '/recall' });
 
 wssBridge.on('connection', (downstream, req) => {
-  // Você pode passar ?bot_id=... na URL do WS para escolher o bot que vai tocar o áudio.
   const url = new URL(req.url, `http://${req.headers.host}`);
+
   const RATE = Number(url.searchParams.get('rate') || 16000);
+  const PLAY_URL = url.searchParams.get('playUrl') || ''; // se vier, priorizamos este caminho
   const BOT_ID = url.searchParams.get('bot_id') || RECALL_BOT_ID_DEFAULT;
 
   const upstream = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(MODEL_REALTIME)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'OpenAI-Beta': 'realtime=v1'
-      }
-    }
+    { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'OpenAI-Beta': 'realtime=v1' } }
   );
 
   let upstreamOpen = false;
   let downstreamOpen = true;
 
-  // Acumula texto por resposta
   const textBuffers = new Map(); // response_id -> string
 
   upstream.on('open', () => {
     upstreamOpen = true;
 
-    // Sessão Realtime sem áudio de saída do OpenAI (vamos usar ElevenLabs)
+    // Para voice-swap: pedimos somente TEXTO (sem áudio de saída do OpenAI)
     const session = {
       model: MODEL_REALTIME,
       turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 250, silence_duration_ms: 700 },
-      input_audio_format: { type: 'pcm16', sample_rate_hz: RATE },
-      // Nada de voice/output_audio_format: queremos apenas TEXTO
+      input_audio_format: { type: 'pcm16', sample_rate_hz: RATE }
+      // sem voice/output_audio_format
     };
     upstream.send(JSON.stringify({ type: 'session.update', session }));
   });
@@ -199,10 +199,9 @@ wssBridge.on('connection', (downstream, req) => {
   upstream.on('message', async (buf) => {
     if (!downstreamOpen) return;
 
-    // Encaminhe tudo ao cliente (útil p/ logs/debug do front)
+    // Encaminha tudo para quem estiver escutando (útil para UI/logs)
     try { downstream.send(buf); } catch {}
 
-    // Voice-swap: intercepta texto e toca com ElevenLabs → Zoom (Recall)
     if (!VOICE_SWAP) return;
 
     try {
@@ -221,47 +220,45 @@ wssBridge.on('connection', (downstream, req) => {
         textBuffers.delete(rid);
 
         if (fullText) {
-          // a) injeta no Zoom via Recall Output Audio (oficial)
           try {
-            const b64 = await elevenSynthesizeMp3Base64(fullText);
-            await recallOutputAudio(BOT_ID, b64);  // Bot precisa ter sido criado com automatic_audio_output (pode ser mp3 silencioso). 
+            if (PLAY_URL) {
+              // Rota 1: Output Media (playUrl) → envia PCM16
+              const pcm = await elevenSynthesizePcm16(fullText);
+              await sendPcmToPlayUrl(PLAY_URL, pcm, RATE);
+            } else if (PLAY_TO === 'recall') {
+              // Rota 2: Output Audio (Recall) → envia MP3 base64
+              const b64 = await elevenSynthesizeMp3Base64(fullText);
+              await recallOutputAudio(BOT_ID, b64);
+            }
           } catch (e) {
-            console.error('[recallOutputAudio] erro', e?.response?.status, e?.message);
+            console.error('[voice-swap playback error]', e?.response?.status, e?.message);
           }
 
-          // b) (opcional) também manda p/ /player (debug local)
+          // (opcional) também toca no /player (debug)
           try { broadcastSay(fullText); } catch {}
         }
       }
-    } catch { /* ignore frames não-JSON */ }
+    } catch {
+      /* ignore frames não-JSON */
+    }
   });
 
-  // Tudo que vier do cliente, repasse ao OpenAI (ex.: audio input, response.create etc.)
-  downstream.on('message', (msg) => {
-    if (upstreamOpen) upstream.send(msg);
-  });
+  // Tudo que vier do cliente, repassa ao OpenAI (ex.: input de áudio, response.create, etc.)
+  downstream.on('message', (msg) => { if (upstreamOpen) upstream.send(msg); });
 
-  downstream.on('close', () => {
-    downstreamOpen = false;
-    try { upstream.close(); } catch {}
-  });
-  downstream.on('error', () => {
-    downstreamOpen = false;
-    try { upstream.close(); } catch {}
-  });
+  downstream.on('close', () => { downstreamOpen = false; try { upstream.close(); } catch {} });
+  downstream.on('error', () => { downstreamOpen = false; try { upstream.close(); } catch {} });
 
-  upstream.on('close', () => {
-    if (downstreamOpen) try { downstream.close(); } catch {}
-  });
+  upstream.on('close', () => { if (downstreamOpen) try { downstream.close(); } catch {} });
   upstream.on('error', (e) => {
     console.error('[Realtime error]', e?.message);
     if (downstreamOpen) try { downstream.close(); } catch {}
   });
 });
 
-// --------------------------------------------------------------------------------
+// ----------------------------------------------------------------
 
 server.listen(PORT, () => {
   console.log(`[Server] Listening on :${PORT}`);
-  console.log(`VOICE_SWAP=${VOICE_SWAP ? 'elevenlabs' : 'off'}`);
+  console.log(`VOICE_SWAP=${VOICE_SWAP ? 'elevenlabs' : 'off'} | PLAY_TO=${PLAY_TO}`);
 });
