@@ -42,10 +42,12 @@ personas = {
 You specialize in Alphabet, Microsoft, Amazon, Meta, Mastercard, Danaher, Intuit,
 GE Aerospace, Moody's, BTG Pactual, Localiza, Hims & Hers, and Nvidia—their sectors and competitors.
 You've seen many market cycles, and your philosophy is a blend of the long-term, business-focused principles of your mentors, Warren Buffett and Charlie Munger. You focus on understanding businesses, their competitive moats, and the power of compounding over time.
+
 Identity rules:
 • If asked "who are you?" or "what's your name?", always reply exactly: "I am Munffett."
 • Never say you are an AI or assistant; never ask the user to name you.
 • Stay in character at all times.
+
 Style & voice:
 • Wise, patient, and clear-spoken. Use simple analogies and plain English to explain complex ideas, much like a teacher would.
 • Ground your insights in facts and business fundamentals.
@@ -56,11 +58,14 @@ Style & voice:
 • When you speak in portuguese, you use an accent from Brazillian dub actors 
 from the 1950s, and you refer to your name as "Mânfet"
 • When you speak in english, you use an accent from the 1950s.
+
+
 Scope & behavior:
 • You can discuss any company, but you are a true expert on the companies listed above.
 • Start with the key takeaway, but always explain your reasoning. Focus on the 'why' behind a business, not just the 'what'.
 • No personalized investment advice; keep it educational, focusing on principles and business analysis.
 • If you don't know something, say so. Explain what you’d need to read or check to find an answer (e.g., the 10-K, an earnings call transcript, etc.).
+
 Zoom etiquette:
 • Acknowledge new speakers briefly; don’t monologue.
 • If audio is unclear, ask concisely for a repeat."""
@@ -151,29 +156,26 @@ async def websocket_handler(request):
             async for msg in openai_ws:
                 if not ws.closed:
                     try:
-                        logger.info(f"SERVER RECEIVED FROM OPENAI: {msg[:250]}")
                         data = json.loads(msg)
-                        if data.get("type") == "conversation.item.updated" and data.get("item", {}).get("delta", {}).get("text"):
-                            text_chunk = data.get("item", {}).get("delta", {}).get("text")
-                            logger.info(f"PARSED TEXT CHUNK: '{text_chunk}'")
-                            if text_chunk:
-                                logger.info("CALLING ELEVENLABS...")
+                        # **FIX: Listen for the correct event type 'response.text.delta'**
+                        if data.get("type") == "response.text.delta":
+                            text_chunk = data.get("delta")
+                            item_id = data.get("item_id")
+                            
+                            if text_chunk and item_id:
                                 audio_stream = await elevenlabs_client.generate(
                                     text=text_chunk,
                                     voice=Voice(voice_id="jn34bTlmmOgOJU9XfPuy", settings=VoiceSettings(stability=0.71, similarity_boost=0.5, style=0.0, use_speaker_boost=True)),
                                     model="eleven_multilingual_v2", stream=True, output_format="pcm_24000"
                                 )
-                                logger.info("RECEIVED ELEVENLABS STREAM, PROCESSING CHUNKS...")
-                                chunk_count = 0
                                 async for chunk in audio_stream:
                                     if chunk:
-                                        chunk_count += 1
+                                        # Re-package the audio into the event type the client expects
                                         audio_event = {
                                             "type": "conversation.item.updated",
-                                            "item": { "id": data.get("item", {}).get("id"), "delta": { "audio": base64.b64encode(chunk).decode('utf-8') } }
+                                            "item": { "id": item_id, "delta": { "audio": base64.b64encode(chunk).decode('utf-8') } }
                                         }
                                         await ws.send_str(json.dumps(audio_event))
-                                logger.info(f"PROCESSED AND SENT {chunk_count} AUDIO CHUNKS TO CLIENT.")
                         else:
                             await ws.send_str(msg)
                     except Exception as e:
