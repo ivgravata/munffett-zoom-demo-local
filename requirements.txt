@@ -2,4 +2,4 @@ websockets==12.0
 python-dotenv==1.0.1
 aiohttp==3.9.1
 aiohttp-cors==0.7.0
-elevenlabs
+elevenlabs>=0.3.0
