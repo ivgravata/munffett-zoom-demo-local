@@ -152,41 +152,53 @@ async def websocket_handler(request):
                     if not openai_ws.closed: await openai_ws.send(json.dumps(event))
                 elif msg.type == aiohttp.WSMsgType.ERROR: break
 
-        async def relay_from_openai():
+                async def relay_from_openai():
             async for msg in openai_ws:
-                if not ws.closed:
-                    try:
-                        data = json.loads(msg)
-                        if data.get("type") == "response.text.delta":
-                            text_chunk = data.get("delta")
-                            item_id = data.get("item_id")
-                            
-                            if text_chunk and item_id:
-                                # **FIX: Pass voice arguments correctly**
-                                audio_stream = await elevenlabs_client.text_to_speech.stream(
-                                    text=text_chunk,
-                                    voice_id="jn34bTlmmOgOJU9XfPuy",
-                                    voice_settings=VoiceSettings(
-                                        stability=0.71, 
-                                        similarity_boost=0.5, 
-                                        style=0.0, 
-                                        use_speaker_boost=True
-                                    ),
-                                    model="eleven_multilingual_v2",
-                                    output_format="pcm_24000"
-                                )
-                                
-                                async for chunk in audio_stream:
-                                    if chunk:
-                                        audio_event = {
-                                            "type": "conversation.item.updated",
-                                            "item": { "id": item_id, "delta": { "audio": base64.b64encode(chunk).decode('utf-8') } }
-                                        }
-                                        await ws.send_str(json.dumps(audio_event))
-                        else:
-                            await ws.send_str(msg)
-                    except Exception as e:
-                        logger.error(f"ERROR in relay_from_openai: {e}", exc_info=True)
+                if ws.closed:
+                    break
+                try:
+                    data = json.loads(msg)
+
+                    # 1) Pegamos texto incremental do Realtime
+                    if data.get("type") == "response.text.delta":
+                        text_chunk = data.get("delta")
+                        item_id = data.get("item_id")
+
+                        if text_chunk and item_id:
+                            # 2) Stream TTS ElevenLabs corretamente (model_id/voice_id/output_format)
+                            audio_stream = await elevenlabs_client.text_to_speech.stream(
+                                text=text_chunk,
+                                voice_id="jn34bTlmmOgOJU9XfPuy",  # sua voz
+                                model_id="eleven_multilingual_v2",
+                                output_format="pcm_16000",
+                                voice_settings=VoiceSettings(
+                                    stability=0.71,
+                                    similarity_boost=0.5,
+                                    style=0.0,
+                                    use_speaker_boost=True,
+                                ),
+                            )
+                            # 3) Envia os chunks como base64 num evento que o seu front/bridge entende
+                            async for chunk in audio_stream:
+                                if not chunk:
+                                    continue
+                                audio_event = {
+                                    "type": "conversation.item.updated",
+                                    "item": {
+                                        "id": item_id,
+                                        "delta": {
+                                            "audio": base64.b64encode(chunk).decode("utf-8")
+                                        },
+                                    },
+                                }
+                                await ws.send_str(json.dumps(audio_event))
+                    else:
+                        # repassa outros eventos
+                        await ws.send_str(msg)
+
+                except Exception as e:
+                    logger.error(f"ERROR in relay_from_openai: {e}", exc_info=True)
+
 
         await asyncio.gather(relay_to_openai(), relay_from_openai())
     except Exception as e:
